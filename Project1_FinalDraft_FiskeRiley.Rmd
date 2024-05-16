@@ -1,0 +1,427 @@
+---
+title: 'Project 1: Forecasting the Exchange Rate of the Australian Dollar relative to the Euro'
+author: "Riley Fiske"
+date: "2023-11-03"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(fpp3)
+library(stringr)
+
+## for the headings, think of this as an APA formatted paper for different levels of headings...
+# the title is already there from the information at the top of this document
+```
+
+## Introduction
+
+    
+  A common way that you hear that people like to make money is through playing the stock market. It is a way for individuals to "strategically gamble", or put their money on the line, hoping to return a profit by playing the odds in a way that is a little more controlled than the casino. There are numerous papers discussing the results of analyzing the stock market through a data analysis lens seeking to glean insights into smarter investments, but the purpose of this paper is rather a close cousin to the stock market: the foreign exchange market.
+
+    
+  The foreign exchange (FOREX) market involves the exchange of global currencies by central banks, investors, or individuals looking to simply have spending cash abroad. This market is impacted by the activities of independent economies local or abroad, interaction between economies, national events, and global events among many other things. The FOREX market is where the exchange rate of currencies is decided, or how much a currency is worth relative to another in the form of a ratio. For example, according to the European Central Bank, the Euro was worth 1.2935 US Dollars on January 2^nd^, 2012. In context, this means that for every Euro a person holds, they could exchange it for 1.2935 US Dollars plus exchange fee, or vice-versa, for every US Dollar a person holds, they could exchange it for 0.773 Euro.
+
+    
+  Over time, this ratio changes for a variety of reasons, some of which were described in the previous paragraph. Since it changes over time, this means any currency we hold is an investment into a country's economy. Similar to buying stocks, people can buy foreign currency for the current exchange rate and sell it back at the exchange rate at the time of the transaction. Thus, there is a market and a demand to know these exchange rates.
+
+    
+  In this analysis, we will be analyzing models that attempt to capture the trend of the exchange rate of the Australian Dollar relative to the Euro using data from the [[European Central Bank]{.underline}](https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html). This dataset is updated daily for all currencies traded by the European Central Bank. After analysis, these models will be used to create forecasts of the Australian Dollar's exchange rate for 60-365 days. There is utility in this forecast as investors in foreign currencies would like to have sensible forecasts to decide when to buy and sell, and central banks would also be able to use these predictions to see where their currency is heading to inform foreign investments and set national interest rates appropriately.
+
+## The Data
+
+    
+  The dataset from the European Central Bank includes 41 currencies, but as was stated before, this analysis will be focused on the Australian Dollar. To put the Australian Dollar in context, the two plots below display some popular currencies from the dataset plotted on top of each other. The US Dollar is a well known currency around the world, and as can be seen in the plot, the Australian Dollar seems to be slightly weaker than the US Dollar for a majority of the time. However, the second plot includes the Japanese Yen and South Korean Won that are on a completely different scale than the other currencies. With the context of how these currencies compare to each other, the picture of how the Australian Dollar sizes up to other currencies should hopefully be more clear to the reader.
+
+```{r read_in_data, echo = FALSE, fig.dim = c(10,4), warning = FALSE}
+
+# read in dataset, remove problematic variables, tidy it up, add helpful variables for analysis, and turn into time series
+
+forex <- read.csv("eurofxref-hist.csv")
+
+forex_names <- read.csv("currencynames.csv") # homemade CSV file to act as a key for the currency abbreviations
+
+# Need to Convert to ExchangeDate (row number) since the time series is unevenly spaced due to holidays and weekends
+
+clean_forex <- forex %>%
+  select(-c(CYP,EEK,LTL,LVL,MTL,ROL,SIT,SKK,HRK,RUB,TRL,X)) %>%
+  arrange(Date) %>%
+  mutate(Date = as.Date(Date),
+         BGN = as.numeric(BGN),
+         RON = as.numeric(RON),
+         ISK = as.numeric(ISK),
+         TRY = as.numeric(TRY),
+         BRL = as.numeric(BRL),
+         CNY = as.numeric(CNY),
+         IDR = as.numeric(IDR),
+         ILS = as.numeric(ILS),
+         INR = as.numeric(INR),
+         MXN = as.numeric(MXN),
+         MYR = as.numeric(MYR),
+         PHP = as.numeric(PHP),
+         THB = as.numeric(THB),
+         ExchangeDay = row_number())
+
+tidy_forex <- clean_forex %>%
+  pivot_longer(cols=c(USD,JPY,BGN,CZK,DKK,GBP,HUF,PLN,RON,SEK,CHF,ISK,NOK,TRY,AUD,BRL,CAD,CNY,HKD,IDR,ILS,INR,KRW,MXN,MYR,NZD,PHP,SGD,THB,ZAR)) %>%
+  rename(Currency = name,
+         Value = value)
+
+tidy_forex <- merge(tidy_forex, forex_names, by.x = "Currency", by.y = "Abbreviation")
+tidy_forex <- tidy_forex %>%
+  select(ExchangeDay,Date,Currency,Name,Value) %>%
+  rename(Abv = Currency) %>%
+  rename(Currency = Name)
+
+forex_ts <- tidy_forex %>%
+  as_tsibble(index = ExchangeDay, key = Currency)
+
+forex_ts %>%
+  filter(Abv == "USD" | Abv == "CAD" | Abv == "GBP" | Abv == "AUD") %>%
+  autoplot(Value) + labs(title = "Currency Exchange Rates (European Central Bank)", x = "Exchange Day", y = "Exchange Rate (relative to the Euro)")
+
+forex_ts %>%
+  filter(Abv == "JPY" | Abv == "KRW") %>%
+  autoplot(Value) + labs(title = "Currency Exchange Rates (European Central Bank)", x = "Exchange Day", y = "Exchange Rate (relative to the Euro)")
+
+aud_ts <- forex_ts %>%
+  filter(Abv == "AUD")
+
+aud_ts %>% autoplot(Value) + labs(title = "Exchange Rate of the Australian Dollar", x = "Exchange Day", y = "AUD/EUR")
+
+```
+
+    
+  In terms of necessary mathematical transformations to assist in the creation of models, the data does not appear in a way that would benefit from any sort of transformation. A log transformation is helpful in a linear model context to capture a logarithmic (curved) trend, but this analysis will be limited to more native forecasting models where those transformation would not be substantially helpful.
+  
+## Initial Models
+
+```{r model_creation, echo = FALSE, warning = FALSE}
+
+# Mean
+
+mod_aud_mean <- aud_ts %>%
+  model(MEAN(Value))
+
+# Naïve
+
+mod_aud_naive <- aud_ts %>%
+  model(NAIVE(Value))
+
+# Seasonal Naïve - not applicable since no definable season with exchange days variable
+
+# Drift
+
+mod_aud_drift <- aud_ts %>%
+  model(RW(Value ~ drift()))
+
+```
+
+    
+  The native forecasting models that will be used in this analysis are the Mean Model, Naïve Model, and the Drift Model. The Seasonal Naïve model is not able to be used in this more basic analysis due to the nature of the exchange day variable used as time. Since the FOREX market only reports rates on exchange days, weekends and holidays are often missed, resulting in an unevenly spaced dataset. Thus, the exchange day variable was created to track time, and the seasonality of week, month, or year was lost. In a deeper analysis, this could be reincorporated back in.\
+    
+  When analyzing the three models, analyzing the residuals of each against the four criterion for a good fitting model will reveal how good of a fit each model is. The four criterion for determining this are checking for autocorrelation, mean of zero, constant variance, and a normal distribution. A hierarchy of models will then be formed to decide which models to use for generating forecasts.
+
+### The Mean Model
+
+    
+  The Mean Model predicts that the future observations will take on the value of the mean of all previously observed observations in the dataset.
+
+```{r mean_model_residuals, echo = FALSE, warning = FALSE, fig.dim = c(10,4)}
+
+mod_aud_mean %>% augment() %>%
+  autoplot(.fitted, color = "blue") +
+  autolayer(aud_ts,Value) + labs(title = "Exchange Rate of the Australian Dollar (Mean Model)", x = "Exchange Day", y = "AUD/EUR")
+
+gg_tsresiduals(mod_aud_mean) + labs(title = "Residual Plot of the Mean Model on AUD FOREX Data")
+
+#mod_aud_mean %>% augment() # all fitted values are the same since it is always set to fit to the mean of the dataset, which in this case is set at the end of execution (not the continuous mean, but the ending mean)
+
+```
+
+    
+  Looking at the residuals of the Mean Model immediately reveals many faults. Firstly, the correlogram tells the whole story of remaining autocorrelation for this model. Without a doubt there is remaining correlation in the data as every lag value is significantly high. The mean of these residuals could be zero, but it might be slightly lower due to the higher concentration of residuals less that 0. Next, the plot of the innovation residuals over each exchange day seems to essentially be a transformation of the original data, just with the mean of the data subtracted from it. Thus, the variance is not at all constant. There appears to be a slightly right skewed tendency to the residuals in the histogram, which means they are not normally distributed.\
+  
+    
+  The residuals do not sell the Mean Model as a very good model for predicting the exchange rate of the Australian Dollar. The residuals say that the point forecasts generated by this model should not be treated as gospel, however, as will be seen in the following sections, the prediction intervals may be somewhat helpful. The prediction intervals will encompass the predictions since the Mean Model rides the middle of the data and encompasses the range of values quite well.
+
+### The Naïve Model
+
+    
+  The Naïve Model predicts that the future observations will take on the value of the last observed value in the dataset. 
+  
+```{r naive_model_residuals, echo = FALSE, warning = FALSE, fig.dim = c(10,4)}
+
+mod_aud_naive %>% augment() %>%
+  autoplot(.fitted, color = "blue") +
+  autolayer(aud_ts,Value) + labs(title = "Exchange Rate of the Australian Dollar (Naïve Model)", x = "Exchange Day", y = "AUD/EUR")
+
+gg_tsresiduals(mod_aud_naive) + labs(title = "Residual Plot of the Naïve Model on AUD FOREX Data")
+
+# mod_aud_naive |>
+#   augment() |>
+#   features(.resid, ljung_box, lag = 10)
+
+#mod_aud_naive %>% augment() # all fitted values are equal to the previously observed value since that is how the naive method works. For forecasted values, it will always be the last value of the dataset since when guessing n + 1, you take the value of n, for n + 2 you take the value of n + 1 which equals the value of n, etc.
+
+```
+
+    
+  The residuals for the Naïve Model get much closer to meeting each of the criterion for a good-fitting model. The Ljung-Box Test, a hypothesis test used to test for autocorrelation, returns a $p$-value of 0.0025, implying there is a statistically significant amount of evidence for autocorrelation still existing in the residuals. This follows by observing the correlogram, which shows significant amounts of autocorrelation on lag days 1, 3, 21, 25, and more later. Thus, it is fair to say autocorrelation still exists in the residuals, meaning there is still remaining correlation to extract from the residuals to build a better model. The histogram of the residuals shows that the mean of the residuals is very close to 0, and there is not a super clear left or right skew in the histogram either which is a good indicator of a normal distribution. It is hard to tell with the large amount of collected data, but there does not seem to be a pattern of variance in the residuals on the plot against exchange day, and the variation is quite random and constant minus a couple spikes, most visibly around exchange day 2500.
+  
+    
+  The Naïve Model's residuals do a better job at meeting the criterion for a good-fitting model than the Mean Model. It is therefore fair to say the point forecasts generated by the Naïve Model can be trusted more than the point forecasts generated by the Mean Model. However, it is important to remember that the point forecasts are simply just the last observed value. This is why it is hard to differentiate the difference between the fitted values of the Naïve Model and the actual values of the Australian Dollar exchange rate in the plot showing the Naïve Model. The prediction interval should also be mostly trustworthy since it exponentially grows from the previously observed value, but this will be clearer in later sections with plots of these intervals.
+
+### The Drift Model
+
+    
+  The Drift Model connects the first and last observations and draws a secant line to connect them and predicts that future observations will exist on that line as it continues forward.
+  
+```{r drift_model_residuals, echo = FALSE, warning = FALSE, fig.dim = c(10,4)}
+
+mod_aud_drift %>% augment() %>%
+  autoplot(.fitted, color = "blue") +
+  autolayer(aud_ts,Value) + labs(title = "Exchange Rate of the Australian Dollar (Drift Model)", x = "Exchange Day", y = "AUD/EUR")
+
+gg_tsresiduals(mod_aud_drift) + labs(title = "Residual Plot of the Drift Model on AUD FOREX Data")
+
+# mod_aud_drift |>
+#   augment() |>
+#   features(.resid, ljung_box, lag = 10)
+
+#mod_aud_drift %>% augment() # the fitted value are constantly updating to be the difference of the previously observed value being added with the quotient of the difference between the previously observed value and the first value and the difference between the previously observed exchange day and the first exchange day (example for day 6347: .fitted = 1.6538 + ((1.6538 - 1.91) / (6346 - 1)) ). With the little difference between days, the blue line ends up essentially a lagged value with a slight trend, hence why it is logically not drawing a straight line through the first observation and the last one like I was expecting it to do.
+
+```
+
+    
+  The residuals of the Drift Model very closely resemble the residuals of the Naïve Model. This is due to the way it is calculated throughout the generation and not an error. The Ljung-Box Test returned a $p$-value of 0.0025, which is quite close to the $p$-value returned by the Naïve Model. Thus, we can reach the same conclusion here as we did in the residual analysis of the Naïve Model; it is fair to say autocorrelation still exists in the residuals, meaning there is still remaining correlation to extract from the residuals to build a better model. The histogram of the residuals shows that the mean of the residuals is very close to 0 and there is no clear left or right skew indicative of a normal distribution. In the plot of the residuals over exchange days, there does not appear to be a pattern of variance in the residuals and the variation is quite random and constant minus a couple spikes, most visibly around exchange day 2500. Thus, we can say there is approximately constant variance in the residuals.
+
+    
+  We can reach many of the same conclusions we did in the analysis of the Naïve Model's residuals; the point forecasts can generally be trusted (at least early on) and the prediction intervals will also encompass much of the possible variation from this estimate and bow out as time moves on and the faith in the point estimates decreases. Similarly to how it is hard to see the fitted values of the Naïve Model on the plot showing the Näive Model on the Australian Dollar Exchange Rate data, it is hard to see the fitted values of the Drift Model on the plot showing the Drift Model in a similar light. The fitted values of the Drift Method are generated by adding the quotient of the difference of the previously observed exchange day value and the first observed day value and the difference of the previously observed exchange day and the first exchange day to the previously observed exchange day value. This can be mathematically written as 
+$$ ExchangeRate_i = ExchangeRate_{i-1} + \frac{ExchangeRate_{i-1} - ExchangeRate_1}{ExchangeDay_{i-1} - ExchangeDay_1} $$
+
+With the small difference in the exchange rates between days, the blue line ends up essentially being traced by the black line and only significant days are revealing.
+
+## Training and Testing Sets for Testing Models' Accuracy
+
+    
+  One way to test the performance of a model is to divide the dataset into a training and testing set, use the training set to create a model, create forecasts with the model, then compare these values to the values in the test set to create different test statistics. This is done using a 80-20 partition of the data, leaving off the last 20% of the observations to test models created using the first 80% of the observations. The predictions can be plotted against the actual values, as is done below:
+  
+```{r training_testing_sets, echo = FALSE, warning = FALSE, fig.dim = c(10,4)}
+
+training_num <- floor(nrow(aud_ts) * 0.8)
+testing_num <- nrow(aud_ts) - training_num
+
+training_aud <- aud_ts %>% slice_head(n = training_num)
+
+testing_aud <- aud_ts %>% slice_tail(n = testing_num)
+
+# Mean
+
+forecasts <- training_aud %>%
+  model(MEAN(Value)) %>% forecast(h = testing_num)
+
+mean_accuracy <- forecasts %>%
+  accuracy(testing_aud)
+
+forecasts %>% autoplot(training_aud) +
+  autolayer(testing_aud,Value) + labs(title = "Exchange Rate of the Australian Dollar Forecasts vs. Actual (Mean Model)", x = "Exchange Day", y = "AUD/EUR")
+
+# Naïve
+
+forecasts <- training_aud %>%
+  model(NAIVE(Value)) %>% forecast(h = testing_num)
+
+naive_accuracy <- forecasts %>%
+  accuracy(testing_aud)
+
+forecasts %>% autoplot(training_aud) +
+  autolayer(testing_aud,Value) + labs(title = "Exchange Rate of the Australian Dollar Forecasts vs. Actual (Naïve Model)", x = "Exchange Day", y = "AUD/EUR")
+
+# Drift
+
+forecasts <- training_aud %>%
+  model(RW(Value ~ drift())) %>% forecast(h = testing_num)
+
+drift_accuracy <- forecasts %>%
+  accuracy(testing_aud)
+
+forecasts %>% autoplot(training_aud) +
+  autolayer(testing_aud,Value) + labs(title = "Exchange Rate of the Australian Dollar Forecasts vs. Actual (Drift Model)", x = "Exchange Day", y = "AUD/EUR")
+
+# Make a table of the accuracies to display
+
+accuracy_table <- data.frame(Method = c("Mean","Naïve","Drift"), RMSE = c(mean_accuracy$RMSE[1],naive_accuracy$RMSE[1],drift_accuracy$RMSE[1]), MAE = c(mean_accuracy$MAE[1],naive_accuracy$MAE[1],drift_accuracy$MAE[1]))
+
+```
+
+    
+  The two statistics used in this analysis will be the Root Mean Squared Error (RMSE) and the Mean Absolute Error (MAE). The below table displays the RMSE and MAE values for each method:
+  
+```{r rsme_mae_table_1, echo = FALSE, warning = FALSE}
+
+knitr::kable(accuracy_table, format = "simple", align = "c", caption = "Accuracy Statistic Values for Forecasting Models using Testing/Training Sets") # ChatGPT helped with how to embed a well-formatted table in an RMD
+
+```
+
+    
+  From the table, the Naïve Model minimizes both RMSE and MAE the most, and thus is the best performing model of the three native models created. Between the Mean Model and the Drift Model, the Drift Model performs better according to the MAE and the Mean Model performs better according to RMSE. The ratio between the two MAE scores is more drastic than the ratio between the two RMSE scores and in our earlier analysis, the Drift Method performed better in terms of the residual analysis, so second place is awarded to the Drift Model, leaving the Mean Model in third.
+  
+## Cross-Validation for Testing Models' Accuracy
+
+    
+  Another way to test the accuracy of models is through cross-validation. Cross-Validation removes the effect of the choice of where the data is partitioned like in the training-testing sets used for testing model accuracy and considers a wide-array of split ratios and returns accuracy statistics for the collection of splits. The below table shows the RMSE and MAE statistics for each method using cross-validation:
+
+```{r cross_validation, echo = FALSE, warning = FALSE}
+
+stretched_aud_ts <- aud_ts %>%
+  stretch_tsibble(.init = testing_num, .step = 100)
+
+mean_accuracy <- stretched_aud_ts %>%
+  model(MEAN(Value)) %>% forecast(h = testing_num) %>%
+  accuracy(aud_ts)
+
+naive_accuracy <- stretched_aud_ts %>%
+  model(NAIVE(Value)) %>% forecast(h = testing_num) %>%
+  accuracy(aud_ts)
+
+drift_accuracy <- stretched_aud_ts %>%
+  model(RW(Value ~ drift())) %>% forecast(h = testing_num) %>%
+  accuracy(aud_ts)
+
+accuracy_table_2 <- data.frame(Method = c("Mean","Naïve","Drift"), RMSE = c(mean_accuracy$RMSE[1],naive_accuracy$RMSE[1],drift_accuracy$RMSE[1]), MAE = c(mean_accuracy$MAE[1],naive_accuracy$MAE[1],drift_accuracy$MAE[1]))
+
+knitr::kable(accuracy_table_2, format = "simple", align = "c", caption = "Accuracy Statistic Values for Forecasting Models using Cross-Validation")
+```
+
+    
+  Interestingly enough, the model diagnostic statistics can came out looking fairly different between the training-testing sets and the cross-validation methods. Using a step of 10, the model that minimized RMSE the most in cross-validation was the Mean Model, and the Naïve Model minimized the MAE. Using a step of 100, the Naïve Model minimizes both the RMSE and MAE. The commonality between the two step sizes is that both the Naive and Mean Models perform significantly better than the Drift Model does, which is interesting due to the strength of the performance of the Drift Model against the Mean Model in both the training-testing set accuracy analysis and residual analysis.
+\
+    
+  The bottom line in terms of the rankings of the models overall is that the Naïve Model is superior in both fronts. This is not too surprising since the Naive Model is quite commonly successful in predicting stock prices and the plot of the data points overtime for Australian Dollar Exchange Rates resembles what some stock prices look like over time with unpredictable leaps and falls.
+  
+## Short Term & Long Term Forecasts
+
+    
+  Using the conclusions of the residual, training-testing sets, and cross-validation analyses, the Naïve Model and the Drift Model will be used to generate forecasts for the exchange rate of the Australian Dollar. The Naïve Model performed well in the residual analysis and minimized the training-testing set accuracy and cross-validation statistics. The Drift Model will also be used over the Mean Model due to its better performance in the residual analysis and the testing-training set accuracy statistic.
+
+```{r forecasting_h_setup, echo = FALSE, warning = FALSE}
+
+shortterm_h <- 60
+longterm_h <- 365
+
+```
+
+### Forecasting using the Naïve Model
+
+```{r naive_forecasts, echo = FALSE, warning = FALSE, fig.dim = c(10,4)}
+
+fc_long_aud_naive <- mod_aud_naive %>%
+  forecast(h = longterm_h)
+
+fc_short_aud_naive <- fc_long_aud_naive %>%
+  slice_head(n = shortterm_h)
+
+aud_ts %>%
+  filter(ExchangeDay > max(ExchangeDay) - 365) %>%
+  autoplot(Value) +
+    autolayer(fc_short_aud_naive, Value) + labs(title = "Exchange Rate of the Australian Dollar over the Past Year with 2 Month Forecast (Naïve Method)", x = "Exchange Days", y = "AUD/EUR")
+
+autoplot(aud_ts, Value) +
+  autolayer(fc_long_aud_naive, Value) + labs(title = "Exchange Rate of the Australian Dollar with 1 Year Forecast (Naïve Method)", x = "Exchange Days", y = "AUD/EUR")
+
+naive_hilo <- fc_long_aud_naive %>% hilo()
+
+decimal_num <- 5
+
+naive_fc_table <- data.frame(
+  ForecastDay = c(1,shortterm_h,longterm_h),
+  Low80 = c(round(naive_hilo$`80%`[1]$lower, decimal_num),
+            round(naive_hilo$`80%`[shortterm_h]$lower, decimal_num),
+            round(naive_hilo$`80%`[longterm_h]$lower, decimal_num)),
+  Upper80 = c(round(naive_hilo$`80%`[1]$upper, decimal_num),
+            round(naive_hilo$`80%`[shortterm_h]$upper, decimal_num),
+            round(naive_hilo$`80%`[longterm_h]$upper, decimal_num)),
+  Low95 = c(round(naive_hilo$`95%`[1]$lower, decimal_num),
+            round(naive_hilo$`95%`[shortterm_h]$lower, decimal_num),
+            round(naive_hilo$`95%`[longterm_h]$lower, decimal_num)),
+  Upper95 = c(round(naive_hilo$`95%`[1]$upper, decimal_num),
+            round(naive_hilo$`95%`[shortterm_h]$upper, decimal_num),
+            round(naive_hilo$`95%`[longterm_h]$upper, decimal_num)))
+
+knitr::kable(naive_fc_table, format = "simple", align = "c", caption = "Confidence Interval Lower-Upper Bounds for Naïve Model Forecasts")
+
+```
+
+    
+  The above plots show the forecasts for 60 and 365 Exchange Days using the Naïve Model. As was stated in the residual analysis, the point estimates will be somewhat close and more believable at the beginning of the forecast and the confidence in the point estimates diminishes as they get further from observed data. This can be visually seen by the confidence intervals growing as time advances as well; 80-95% of the probabilistic variation in potential exchange rates are captured within the intervals shown in the 2 plots or numerically stated for forecast days 1, 60, and 365 in the table. The 95% confidence intervals are noticeably wider than the 80% confidence intervals, and the intervals grow in size numerically as well the larger the forecast day.
+  
+### Forecasting using the Drift Model
+
+```{r drift_forecasts, echo = FALSE, warning = FALSE, fig.dim = c(10,4)}
+
+fc_long_aud_drift <- mod_aud_drift %>%
+  forecast(h = longterm_h)
+
+fc_short_aud_drift <- fc_long_aud_drift %>%
+  slice_head(n = shortterm_h)
+
+aud_ts %>%
+  filter(ExchangeDay > max(ExchangeDay) - 365) %>%
+  autoplot(Value) +
+    autolayer(fc_short_aud_drift, Value) + labs(title = "Exchange Rate of the Australian Dollar over the Past Year with 2 Month Forecast (Drift Method)", x = "Exchange Days", y = "Exchange Rate (AUD/EUR)")
+
+autoplot(aud_ts,Value) +
+  autolayer(fc_long_aud_drift,Value) + labs(title = "Exchange Rate of the Australian Dollar with 1 Year Forecast (Drift Method)", x = "Exchange Days", y = "Exchange Rate (AUD/EUR)")
+
+drift_hilo <- fc_long_aud_drift %>% hilo()
+
+decimal_num <- 5
+
+drift_fc_table <- data.frame(
+  ForecastDay = c(1,shortterm_h,longterm_h),
+  Low80 = c(round(drift_hilo$`80%`[1]$lower, decimal_num),
+            round(drift_hilo$`80%`[shortterm_h]$lower, decimal_num),
+            round(drift_hilo$`80%`[longterm_h]$lower, decimal_num)),
+  Upper80 = c(round(drift_hilo$`80%`[1]$upper, decimal_num),
+            round(drift_hilo$`80%`[shortterm_h]$upper, decimal_num),
+            round(drift_hilo$`80%`[longterm_h]$upper, decimal_num)),
+  Low95 = c(round(drift_hilo$`95%`[1]$lower, decimal_num),
+            round(drift_hilo$`95%`[shortterm_h]$lower, decimal_num),
+            round(drift_hilo$`95%`[longterm_h]$lower, decimal_num)),
+  Upper95 = c(round(drift_hilo$`95%`[1]$upper, decimal_num),
+            round(drift_hilo$`95%`[shortterm_h]$upper, decimal_num),
+            round(drift_hilo$`95%`[longterm_h]$upper, decimal_num)))
+
+knitr::kable(drift_fc_table, format = "simple", align = "c", caption = "Confidence Interval Lower-Upper Bounds for Drift Model Forecasts")
+
+```
+
+    
+  The forecasts generated by the Drift Model are shown in these plots. Many of the same observations from the Naïve Model can be made about the Drift Model since the Drift Model is just a downwards sloping version of the flat Naïve Model. Upon quick glance, there is little difference visually between the 2 sets of plots, but in the 1 year forecast plot for the Drift Model, the downwards slope is more noticeable. Looking at the table of numeric confidence intervals, it can be calculated that the intervals for the Drift Model are all larger than the intervals for the Naïve Model, despite this not being significantly noticeable in the plots. Thus, the Naïve Model generates slightly more determinate prediction intervals.
+  
+```{r, echo = FALSE, warning = FALSE}
+
+# mess around
+
+# naive_fc_table %>%
+#   mutate(diff80 = Upper80 - Low80,
+#          diff95 = Upper95 - Low95)
+# 
+# drift_fc_table %>%
+#   mutate(diff80 = Upper80 - Low80,
+#          diff95 = Upper95 - Low95)
+
+```
+
+## Conclusion and Future Work
+
+    
+  To forecast exchange rates of the Australian Dollar relative to the Euro, the Naïve Model and Drift Model were used due to their better performance in the residual analysis, training-testing set accuracy statistics, and cross-validation accuracy statistics. Despite both of these models failing the Ljung-Box Test for autocorrelation, the remaining criterion on the residuals for a good-fitting model were met and these two models were certainly the most logical to use of the native models for predictions.
+
+    
+  However, there are more models out there beyond the Mean, Naïve, Seasonal Naïve, and Drift Models. Certainly a better model could be generated using Time Series Linear Regression. However, the parameters of this project limited the use of the four listed native models. It would be interesting to know how a linear regression model using weekly, monthly, or annual seasonality alongside other indicator variables would perform against the Naïve Model in the short and long terms. It may be fair to guess they would perform approximately equivalently in the short term and the Linear Regression Model would fair better in the long term. Interesting indicator variables to include could include holidays, wars, or population growth/decrease.
+
+    
+  It would also be interesting to see how these models do for different currencies. For example, is the Naïve Model the best for all currencies among the 4 native models, or are there currencies where the Drift Model or the Mean Model outperform the Naïve Model?
